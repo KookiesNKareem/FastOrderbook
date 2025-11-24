@@ -6,11 +6,12 @@ A C++ implementation of a limit-order book with **sub-microsecond** latency for 
 
 | Operation | Latency | Throughput |
 |-----------|---------|------------|
-| Add Order | 0.28 μs | 3617160 orders/s |
-| Get Quote | 70.81 ns | 14122997 quotes/s |
-| Cancel Order| 0.16 μs | 6285355 orders/s |
+| Add Order | 0.87 μs | 1152724 orders/s |
+| Get Quote | 5.58 ns | 179173997 quotes/s |
+| Cancel Order| 0.31 μs | 3181674 orders/s |
 | Modify Order | 0.08 μs | 12953368 orders/s |
-| Match Orders | 
+| Match Orders | 0.63 μs | 1582278 fills/s |
+---------------------------------------------
 
 *Benchmarked on M4 Mac (ARM), compiled with -O3*
 
@@ -20,10 +21,6 @@ A C++ implementation of a limit-order book with **sub-microsecond** latency for 
 - **Efficient matching engine** - handles multiple partial executions at different price levels
 - **O(1) best bid/ask** - instant quotes
 - **Sub-microsecond operations** - suitable for low-latency trading
-
-## Architecture
-
-See [DESIGN.md](DESIGN.md) for detailed architecture decisions.
 
 ## Performance Details
 
