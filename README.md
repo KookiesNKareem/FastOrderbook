@@ -24,4 +24,4 @@ A C++ implementation of a limit-order book with **sub-microsecond** latency for 
 
 ## Performance Details
 
-See [PERFORMANCE.md](PERFORMANCE.md) for optimization journey and benchmarks.
+See [Performance.md](Performance.md) for optimization journey and benchmarks.
