@@ -1,0 +1,25 @@
+# Executables
+orderbook
+*.out
+*.exe
+
+# Object files
+*.o
+*.obj
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
