@@ -4,7 +4,7 @@ A C++ implementation of a limit-order book with **sub-microsecond** latency for 
 
 ## Performance Summary
 
-| Operation | Latency | STD (`n=10` runs) | Throughput |
+| Operation | Latency | STD (`n=10` benchmark runs) | Throughput |
 |-----------|---------|------------|-----|
 | Add Order | 0.12 μs | 0.02 μs | 8,315,591 orders/s |
 | Get Quote | 0.24 ns | 0.01 ns | 4,187,266,748 quotes/s |
