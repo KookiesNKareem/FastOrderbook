@@ -1,6 +1,6 @@
 # High-Performance Limit Order Book
 
-A C++ implementation of a limit-order book with **sub-microsecond** latency for all operations. 
+A C++ implementation of a limit-order book taking **less than 0.15 microseconds** for all operations.
 
 ## Performance Summary
 
