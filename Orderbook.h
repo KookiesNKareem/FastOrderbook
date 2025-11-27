@@ -4,7 +4,6 @@
 #include "OrderUtils.h"
 #include <iostream>
 #include <unordered_map>
-#include <vector>
 #include <algorithm>
 
 using namespace std;
@@ -20,6 +19,46 @@ PriceLevel sell_side[MAX_PRICE];
 // track best prices for speed
 uint32_t best_bid = 0;
 uint32_t best_ask = MAX_PRICE;
+
+// static trade buffer to avoid allocations in hot path
+constexpr uint32_t MAX_TRADES = 256;
+Trade trade_buffer[MAX_TRADES];
+uint32_t trade_count = 0;
+
+// bitmaps for O(1) best bid/ask lookup
+constexpr uint32_t BITMAP_SIZE = (MAX_PRICE + 63) / 64;
+uint64_t bid_bitmap[BITMAP_SIZE] = {0};
+uint64_t ask_bitmap[BITMAP_SIZE] = {0};
+
+inline void set_level_active(uint32_t price, bool is_bid) {
+    uint64_t* bmp = is_bid ? bid_bitmap : ask_bitmap;
+    bmp[price / 64] |= (1ULL << (price % 64));
+}
+
+inline void set_level_inactive(uint32_t price, bool is_bid) {
+    uint64_t* bmp = is_bid ? bid_bitmap : ask_bitmap;
+    bmp[price / 64] &= ~(1ULL << (price % 64));
+}
+
+inline uint32_t find_best_bid() {
+    for (int i = BITMAP_SIZE - 1; i >= 0; --i) {
+        if (bid_bitmap[i]) {
+            // count leading zeros
+            return i * 64 + (63 - __builtin_clzll(bid_bitmap[i]));
+        }
+    }
+    return 0;
+}
+
+inline uint32_t find_best_ask() {
+    for (uint32_t i = 0; i < BITMAP_SIZE; ++i) {
+        if (ask_bitmap[i]) {
+            // count trailing zeroes
+            return i * 64 + __builtin_ctzll(ask_bitmap[i]);
+        }
+    }
+    return MAX_PRICE;
+}
 
 Quote get_quote()
 {
@@ -42,10 +81,11 @@ Quote get_quote()
 }
 
 
-vector<Trade> fill_order(uint64_t order_id, Side side, uint32_t price, uint32_t quantity, uint32_t& filled_quantity, vector<Trade>& trades)
+void fill_order(uint64_t order_id, Side side, uint32_t price, uint32_t quantity, uint32_t& filled_quantity)
 {
     uint32_t remaining = quantity;
     filled_quantity = 0;
+    trade_count = 0;
 
     if (side == Side::BUY)
     {
@@ -54,21 +94,30 @@ vector<Trade> fill_order(uint64_t order_id, Side side, uint32_t price, uint32_t 
         {
             PriceLevel& level = sell_side[best_ask];
             if (level.order_ids.empty()) {
-                // find next ask
-                best_ask++;
-                while (best_ask < MAX_PRICE && sell_side[best_ask].order_ids.empty()) {
-                    best_ask++;
-                }
+                set_level_inactive(best_ask, false);
+                best_ask = find_best_ask();
                 continue;
             }
 
             uint64_t resting_order_id = level.order_ids.front();
             auto order_iter = orders.find(resting_order_id);
 
+            // skip deleted/stale orders
+            if (order_iter == orders.end() || order_iter->second.deleted) {
+                level.order_ids.pop_front();
+                if (level.order_ids.empty()) {
+                    set_level_inactive(best_ask, false);
+                    best_ask = find_best_ask();
+                }
+                continue;
+            }
+
             Order& resting_order = order_iter->second;
 
             uint32_t match_quantity = min(remaining, resting_order.quantity);
-            trades.emplace_back(order_id, resting_order_id, best_ask, match_quantity);
+            if (trade_count < MAX_TRADES) {
+                trade_buffer[trade_count++] = Trade(order_id, resting_order_id, best_ask, match_quantity);
+            }
             remaining -= match_quantity;
             filled_quantity += match_quantity;
 
@@ -77,15 +126,12 @@ vector<Trade> fill_order(uint64_t order_id, Side side, uint32_t price, uint32_t 
 
             if (resting_order.quantity == 0)
             {
-                orders.erase(order_iter);
+                resting_order.deleted = true;  // tombstone
                 level.order_ids.pop_front();
 
                 if (level.order_ids.empty()) {
-                    // find next ask
-                    best_ask++;
-                    while (best_ask < MAX_PRICE && sell_side[best_ask].order_ids.empty()) {
-                        best_ask++;
-                    }
+                    set_level_inactive(best_ask, false);
+                    best_ask = find_best_ask();
                 }
             }
         }
@@ -97,25 +143,20 @@ vector<Trade> fill_order(uint64_t order_id, Side side, uint32_t price, uint32_t 
         {
             PriceLevel& level = buy_side[best_bid];
             if (level.order_ids.empty()) {
-                // find next bid price
-                best_bid--;
-                while (best_bid > 0 && buy_side[best_bid].order_ids.empty()) {
-                    best_bid--;
-                }
+                set_level_inactive(best_bid, true);
+                best_bid = find_best_bid();
                 continue;
             }
 
             uint64_t resting_order_id = level.order_ids.front();
             auto order_iter = orders.find(resting_order_id);
 
-            // check for stale order_ids
-            if (order_iter == orders.end()) {
+            // skip deleted/stale orders
+            if (order_iter == orders.end() || order_iter->second.deleted) {
                 level.order_ids.pop_front();
                 if (level.order_ids.empty()) {
-                    best_bid--;
-                    while (best_bid > 0 && buy_side[best_bid].order_ids.empty()) {
-                        best_bid--;
-                    }
+                    set_level_inactive(best_bid, true);
+                    best_bid = find_best_bid();
                 }
                 continue;
             }
@@ -123,7 +164,9 @@ vector<Trade> fill_order(uint64_t order_id, Side side, uint32_t price, uint32_t 
             Order& resting_order = order_iter->second;
 
             uint32_t match_quantity = min(remaining, resting_order.quantity);
-            trades.emplace_back(order_id, resting_order_id, best_bid, match_quantity);
+            if (trade_count < MAX_TRADES) {
+                trade_buffer[trade_count++] = Trade(order_id, resting_order_id, best_bid, match_quantity);
+            }
             remaining -= match_quantity;
             filled_quantity += match_quantity;
 
@@ -132,21 +175,27 @@ vector<Trade> fill_order(uint64_t order_id, Side side, uint32_t price, uint32_t 
 
             if (resting_order.quantity == 0)
             {
-                orders.erase(order_iter);
+                resting_order.deleted = true;  // tombstone
                 level.order_ids.pop_front();
 
                 if (level.order_ids.empty()) {
-                    // find next bid price
-                    best_bid--;
-                    while (best_bid > 0 && buy_side[best_bid].order_ids.empty()) {
-                        best_bid--;
-                    }
+                    set_level_inactive(best_bid, true);
+                    best_bid = find_best_bid();
                 }
             }
         }
     }
+}
 
-    return trades;
+// batch cleanup of tombstoned orders
+void cleanup_deleted_orders() {
+    for (auto it = orders.begin(); it != orders.end(); ) {
+        if (it->second.deleted) {
+            it = orders.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void add_order(uint64_t order_id, Side side, uint32_t price, uint32_t quantity)
@@ -156,12 +205,10 @@ void add_order(uint64_t order_id, Side side, uint32_t price, uint32_t quantity)
         return;
     }
 
-    vector<Trade> trades;
-    trades.reserve(100); // avoid re-allocations 99% of the time
     uint32_t filled_quantity = 0;
 
     // try to fill first
-    trades = fill_order(order_id, side, price, quantity, filled_quantity, trades);
+    fill_order(order_id, side, price, quantity, filled_quantity);
 
     if (filled_quantity >= quantity)
     {
@@ -172,6 +219,8 @@ void add_order(uint64_t order_id, Side side, uint32_t price, uint32_t quantity)
 
     PriceLevel& level = (side == Side::BUY) ? buy_side[price] : sell_side[price];
 
+    bool was_empty = level.order_ids.empty();
+
     if (level.price == 0) {
         level.price = price;
     }
@@ -181,7 +230,11 @@ void add_order(uint64_t order_id, Side side, uint32_t price, uint32_t quantity)
 
     orders.emplace(order_id, Order(order_id, side, price, remaining_quantity));
 
-    // update best bid/ask if necessary
+    // update bitmap and best bid/ask if this level just became active
+    if (was_empty) {
+        set_level_active(price, side == Side::BUY);
+    }
+
     if (side == Side::BUY) {
         if (price > best_bid) {
             best_bid = price;
@@ -196,11 +249,12 @@ void add_order(uint64_t order_id, Side side, uint32_t price, uint32_t quantity)
 void cancel_order(uint64_t order_id)
 {
     auto it = orders.find(order_id);
-    if (it == orders.end()) {
+    if (it == orders.end() || it->second.deleted) {
         return;
     }
 
     Order& order = it->second;
+    order.deleted = true;  // tombstone
     uint32_t price = order.price;
 
     PriceLevel& level = (order.side == Side::BUY) ? buy_side[price] : sell_side[price];
@@ -215,29 +269,18 @@ void cancel_order(uint64_t order_id)
 
     level.total_quantity -= order.quantity;
 
-    // update best bid/ask if this was the best level and it's now empty
+    // update bitmap and best bid/ask if this level is now empty
     if (level.order_ids.empty()) {
         level.price = 0;
         level.total_quantity = 0;
 
-        if (order.side == Side::BUY && price == best_bid) {
-            // find new best bid
-            if (best_bid > 0) {
-                best_bid--;
-                while (best_bid > 0 && buy_side[best_bid].order_ids.empty()) {
-                    best_bid--;
-                }
-            }
-        } else if (order.side == Side::SELL && price == best_ask) {
-            // find new best ask
-            if (best_ask < MAX_PRICE - 1) {
-                best_ask++;
-                while (best_ask < MAX_PRICE && sell_side[best_ask].order_ids.empty()) {
-                    best_ask++;
-                }
-            } else {
-                best_ask = MAX_PRICE;
-            }
+        bool is_bid = (order.side == Side::BUY);
+        set_level_inactive(price, is_bid);
+
+        if (is_bid && price == best_bid) {
+            best_bid = find_best_bid();
+        } else if (!is_bid && price == best_ask) {
+            best_ask = find_best_ask();
         }
     }
 
@@ -268,6 +311,12 @@ void clear_orderbook() {
     for (uint32_t i = 0; i < MAX_PRICE; i++) {
         buy_side[i] = PriceLevel{};
         sell_side[i] = PriceLevel{};
+    }
+
+    // reset bitmaps
+    for (uint32_t i = 0; i < BITMAP_SIZE; i++) {
+        bid_bitmap[i] = 0;
+        ask_bitmap[i] = 0;
     }
 
     // reset best prices

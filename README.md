@@ -4,13 +4,13 @@ A C++ implementation of a limit-order book with **sub-microsecond** latency for 
 
 ## Performance Summary
 
-| Operation | Latency | Throughput |
-|-----------|---------|------------|
-| Add Order | 0.16 μs | 6,135,722 orders/s |
-| Get Quote | 0.30 ns | 3,299,426,230 quotes/s |
-| Cancel Order| 0.02 μs | 47,393,365 orders/s |
-| Modify Order | 0.01 μs | 108,695,652 orders/s |
-| Match Orders | 0.10 μs | 9,823,183 fills/s |
+| Operation | Latency | STD (n=10 runs) | Throughput |
+|-----------|---------|------------|-----|
+| Add Order | 0.12 μs | 0.02 μs | 8,315,591 orders/s |
+| Get Quote | 0.24 ns | 0.01 ns | 4,187,266,748 quotes/s |
+| Cancel Order| 0.02 μs | 0.00 μs | 47,393,365 orders/s |
+| Modify Order | 0.01 μs | 0.00 μs | 187,167,197 orders/s |
+| Match Orders | 0.08 μs | 0.02 μs | 13,514,155 fills/s |
 ---------------------------------------------
 
 *Benchmarked on M4 Mac (ARM), compiled with -O3*
